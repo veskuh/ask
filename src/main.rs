@@ -4,7 +4,7 @@ use std::process::{self, Command};
 use colored::*;
 use serde::{Serialize, Deserialize};
 use std::io::{self, Read};
-use dialoguer::Confirm;
+use dialoguer::{Confirm, Select};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
@@ -102,8 +102,8 @@ async fn main() {
         println!("{}", "Analyzing error...".yellow().bold());
         match client.fix_command(&buffer).await {
             Ok(full_response) => {
-                let command = extract_command(&full_response);
-                handle_new_command(command, should_copy, args.execute).await;
+                let commands = extract_commands(&full_response);
+                handle_new_commands(commands, should_copy, args.execute).await;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -118,8 +118,9 @@ async fn main() {
         }
         println!("{}", format!("Refining: {}", state.last_command).yellow().bold());
         match client.refine_command(&state.last_command, &refinement).await {
-            Ok(command) => {
-                handle_new_command(command, should_copy, args.execute).await;
+            Ok(full_response) => {
+                let commands = extract_commands(&full_response);
+                handle_new_commands(commands, should_copy, args.execute).await;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -128,8 +129,9 @@ async fn main() {
         }
     } else if let Some(question) = args.question {
         match client.stream_command(&question).await {
-            Ok(command) => {
-                handle_new_command(command, should_copy, args.execute).await;
+            Ok(full_response) => {
+                let commands = extract_commands(&full_response);
+                handle_new_commands(commands, should_copy, args.execute).await;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -142,15 +144,29 @@ async fn main() {
     }
 }
 
-async fn handle_new_command(command: String, should_copy: bool, should_execute: bool) {
-    if !command.is_empty() {
+async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_execute: bool) {
+    if commands.is_empty() { return; }
+
+    let selected_command = if commands.len() > 1 {
+        let selection = Select::new()
+            .with_prompt("Multiple options found. Select one")
+            .items(&commands)
+            .default(0)
+            .interact()
+            .unwrap_or(0);
+        commands[selection].clone()
+    } else {
+        commands[0].clone()
+    };
+
+    if !selected_command.is_empty() {
         // Save state
-        let state = State { last_command: command.clone() };
+        let state = State { last_command: selected_command.clone() };
         let _ = confy::store("ask", "state", state);
 
         if should_copy {
             let mut clipboard = arboard::Clipboard::new().unwrap();
-            if let Err(e) = clipboard.set_text(command.clone()) {
+            if let Err(e) = clipboard.set_text(selected_command.clone()) {
                 eprintln!("Warning: Failed to copy to clipboard: {}", e);
             } else {
                 println!("{}", "✔ Command copied to clipboard".green().italic());
@@ -167,7 +183,7 @@ async fn handle_new_command(command: String, should_copy: bool, should_execute: 
                 let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
                 let status = Command::new(shell)
                     .arg("-c")
-                    .arg(&command)
+                    .arg(&selected_command)
                     .status();
 
                 match status {
@@ -180,12 +196,22 @@ async fn handle_new_command(command: String, should_copy: bool, should_execute: 
     }
 }
 
-fn extract_command(response: &str) -> String {
+fn extract_commands(response: &str) -> Vec<String> {
+    let mut commands = Vec::new();
     for line in response.lines() {
         if line.to_lowercase().starts_with("command:") {
-            return line[8..].trim().to_string();
+            let cmd = line[8..].trim().to_string();
+            if !cmd.is_empty() {
+                commands.push(cmd);
+            }
         }
     }
-    // Fallback if formatting was missed
-    response.lines().last().unwrap_or("").trim().to_string()
+    
+    if commands.is_empty() {
+        // Fallback: treat the non-empty last line as the command if no "Command:" prefix found
+        if let Some(last_line) = response.lines().rev().find(|l| !l.trim().is_empty()) {
+            commands.push(last_line.trim().to_string());
+        }
+    }
+    commands
 }

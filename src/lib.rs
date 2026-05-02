@@ -38,10 +38,12 @@ impl OllamaClient {
         let (os, shell, cwd) = self.get_env_context();
         let prompt = format!(
             "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n\n\
-             Task: Provide only the command line command for this query. \
+             Task: Provide the most common command line command for this query. \
+             If there are other very distinct or necessary alternative ways, you may list them as well, each on a new line starting with 'Command: '. \
+             Otherwise, provide just the single raw command.\n\n\
              Ensure the command is compatible with the specified OS and Shell. \
              Do not include any markdown formatting, backticks, or explanations. \
-             Just the raw command itself. Query: {}",
+             Query: {}",
             os, shell, cwd, question
         );
 
@@ -52,11 +54,12 @@ impl OllamaClient {
         let (os, shell, cwd) = self.get_env_context();
         let prompt = format!(
             "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n- Previous Command: {}\n\n\
-             Task: Based on the previous command and the following refinement instruction, provide only the updated raw command line command. \
+             Task: Based on the previous command and the following refinement instruction, provide the most direct updated command line command. \
+             If there are other very distinct or necessary alternative refinements, you may list them as well, each on a new line starting with 'Command: '. \
+             Otherwise, provide just the single raw command.\n\n\
              Instruction: {}\n\
              Ensure the command is compatible with the specified OS and Shell. \
-             Do not include any markdown formatting, backticks, or explanations. \
-             Just the raw command itself.",
+             Do not include any markdown formatting, backticks, or explanations.",
             os, shell, cwd, last_command, refinement
         );
 
