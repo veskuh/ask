@@ -10,12 +10,15 @@ A simple Rust-based command-line helper for remembering terminal commands. It us
 - **Automatic Clipboard Copy:** The generated command is automatically copied to your system clipboard for instant use.
 - **Context Awareness:** Automatically detects your OS, Linux Distro, Shell, and Current Working Directory to ensure commands are compatible and relevant.
 - **Persistent Configuration:** Save your preferred model and host settings in a config file.
+- **Command Fixer:** Pipe error output to `ask --fix` to get an explanation and a corrected command.
+- **Command Refinement:** Use the `--refine` flag to iteratively adjust the last generated command.
+- **Command Explanation:** Use the `--explain-previous` flag to get a detailed breakdown of the last generated command.
 
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) (2024 edition)
 - [Ollama](https://ollama.com/) installed and running.
-- A model downloaded (default is `gemma4:latest`, but works great with `codellama`, `mistral`, `deepseek-r1`, etc.).
+- A model downloaded (default is `gemma4:e4b`, but works great with `codellama`, `mistral`, `deepseek-r1`, etc.).
 
 ## Installation
 
@@ -37,25 +40,37 @@ Basic usage:
 ask "How to find new files that start with S in this dir"
 ```
 
+Fix a failing command:
+```bash
+# Pipe error output to ask
+ls --invalid-flag 2>&1 | ask --fix
+# or
+ask -f < error.log
+```
+
+Refine the last command:
+```bash
+ask --refine "actually make it recursive"
+```
+
+Explain the last command:
+```bash
+ask --explain-previous
+```
+
 ### Options
+- `-f, --fix`: Fix a command based on error output from stdin.
+- `-r, --refine <INSTRUCTION>`: Refine the previous command.
+- `-e, --explain-previous`: Explain the previous command.
 - `-m, --model <MODEL>`: Ollama model to use (overrides config).
 - `-o, --host <HOST>`: Ollama host URL (overrides config).
 - `--no-copy`: Disable automatic copy to clipboard for this run.
 - `-h, --help`: Show help information.
 
-## Configuration
+## Configuration & State
 
-The utility uses a persistent configuration file. It is created on the first run.
-
-- **Location (macOS):** `~/Library/Application Support/rs.ask/default-config.toml`
-- **Location (Linux):** `~/.config/ask/default-config.toml`
-
-### Default Settings:
-```toml
-model = "gemma4:latest"
-host = "http://localhost:11434"
-auto_copy = true
-```
+- **Config File:** `~/Library/Application Support/rs.ask/default-config.toml` (macOS) or `~/.config/ask/default-config.toml` (Linux).
+- **State File:** Stores the last command for the refine and explain features.
 
 ## License
 

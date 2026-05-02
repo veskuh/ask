@@ -35,10 +35,72 @@ impl OllamaClient {
     }
 
     pub async fn stream_command(&self, question: &str) -> Result<String, Box<dyn Error>> {
+        let (os, shell, cwd) = self.get_env_context();
+        let prompt = format!(
+            "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n\n\
+             Task: Provide only the command line command for this query. \
+             Ensure the command is compatible with the specified OS and Shell. \
+             Do not include any markdown formatting, backticks, or explanations. \
+             Just the raw command itself. Query: {}",
+            os, shell, cwd, question
+        );
+
+        self.stream_raw(&prompt, &mut io::stdout()).await
+    }
+
+    pub async fn refine_command(&self, last_command: &str, refinement: &str) -> Result<String, Box<dyn Error>> {
+        let (os, shell, cwd) = self.get_env_context();
+        let prompt = format!(
+            "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n- Previous Command: {}\n\n\
+             Task: Based on the previous command and the following refinement instruction, provide only the updated raw command line command. \
+             Instruction: {}\n\
+             Ensure the command is compatible with the specified OS and Shell. \
+             Do not include any markdown formatting, backticks, or explanations. \
+             Just the raw command itself.",
+            os, shell, cwd, last_command, refinement
+        );
+
+        self.stream_raw(&prompt, &mut io::stdout()).await
+    }
+
+    pub async fn explain_command(&self, command: &str) -> Result<(), Box<dyn Error>> {
         let os = std::env::consts::OS;
+        let prompt = format!(
+            "Context:\n- Operating System: {}\n\n\
+             Task: Provide a concise, high-signal technical breakdown of this command. \
+             Assume the user is an expert CLI user. Focus on flag functions and non-obvious behavior. \
+             No introductory fluff or basic definitions. \
+             Command: {}",
+            os, command
+        );
+
+        self.stream_raw(&prompt, &mut io::stdout()).await?;
+        Ok(())
+    }
+
+    pub async fn fix_command(&self, error_output: &str) -> Result<String, Box<dyn Error>> {
+        let (os, shell, cwd) = self.get_env_context();
+        let prompt = format!(
+            "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n\n\
+             Task: The following error occurred. \
+             1. Shortly explain what went wrong (max 2 sentences). \
+             2. Provide the fixed raw command line command. \
+             Ensure the command is compatible with the specified OS and Shell.\n\n\
+             Error Output:\n{}\n\n\
+             Format your response exactly like this:\n\
+             Explanation: [Your short explanation]\n\
+             Command: [The raw command]",
+            os, shell, cwd, error_output
+        );
+
+        self.stream_raw(&prompt, &mut io::stdout()).await
+    }
+
+    fn get_env_context(&self) -> (String, String, String) {
+        let os_name = std::env::consts::OS;
         let mut distro = String::new();
 
-        if os == "linux" {
+        if os_name == "linux" {
             if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
                 for line in content.lines() {
                     if line.starts_with("PRETTY_NAME=") {
@@ -49,29 +111,24 @@ impl OllamaClient {
             }
         }
 
+        let context_os = if distro.is_empty() {
+            os_name.to_string()
+        } else {
+            format!("{} ({})", os_name, distro)
+        };
+
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
         let cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
             .unwrap_or_else(|_| "unknown".to_string());
 
-        let context_os = if distro.is_empty() {
-            os.to_string()
-        } else {
-            format!("{} ({})", os, distro)
-        };
+        (context_os, shell, cwd)
+    }
 
-        let prompt = format!(
-            "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n\n\
-             Task: Provide only the command line command for this query. \
-             Ensure the command is compatible with the specified OS and Shell. \
-             Do not include any markdown formatting, backticks, or explanations. \
-             Just the raw command itself. Query: {}",
-            context_os, shell, cwd, question
-        );
-
+    async fn stream_raw<W: Write>(&self, prompt: &str, writer: &mut W) -> Result<String, Box<dyn Error>> {
         let request_payload = GenerateRequest {
             model: &self.model,
-            prompt,
+            prompt: prompt.to_string(),
             stream: true,
         };
 
@@ -91,8 +148,7 @@ impl OllamaClient {
         let mut in_thought = false;
         let mut response_buffer = String::new(); // Buffer for JSON lines
         let mut content_buffer = String::new();  // Buffer for raw content (thinking/command)
-        let mut final_command = String::new();   // Accumulate command for clipboard
-        let mut stdout = io::stdout();
+        let mut final_response = String::new();   // Accumulate response for return
 
         while let Some(chunk_result) = response_stream.next().await {
             let chunk = chunk_result?;
@@ -111,8 +167,8 @@ impl OllamaClient {
                         in_thought = true;
                         if let Some(pos) = content_buffer.find("<think>") {
                             let pre_thought = &content_buffer[..pos];
-                            print!("{}", pre_thought);
-                            final_command.push_str(pre_thought);
+                            write!(writer, "{}", pre_thought)?;
+                            final_response.push_str(pre_thought);
                             content_buffer = content_buffer[pos + 7..].to_string();
                         }
                     }
@@ -120,43 +176,42 @@ impl OllamaClient {
                     if in_thought && content_buffer.contains("</think>") {
                         if let Some(pos) = content_buffer.find("</think>") {
                             let thought = &content_buffer[..pos];
-                            print!("{}", thought.dimmed().cyan());
-                            println!("\n{}", "---".dimmed().cyan());
+                            write!(writer, "{}", thought.dimmed().cyan())?;
+                            write!(writer, "\n{}", "---".dimmed().cyan())?;
                             in_thought = false;
                             content_buffer = content_buffer[pos + 8..].to_string();
                         }
                     } else if in_thought {
                         if content_buffer.len() > 8 {
                             let to_print = &content_buffer[..content_buffer.len() - 8];
-                            print!("{}", to_print.dimmed().cyan());
+                            write!(writer, "{}", to_print.dimmed().cyan())?;
                             content_buffer = content_buffer[content_buffer.len() - 8..].to_string();
                         }
                     } else {
-                        print!("{}", content_buffer);
-                        final_command.push_str(&content_buffer);
+                        write!(writer, "{}", content_buffer)?;
+                        final_response.push_str(&content_buffer);
                         content_buffer.clear();
                     }
-                    stdout.flush()?;
+                    writer.flush()?;
                 }
             }
         }
         
         if !content_buffer.is_empty() {
             if in_thought {
-                print!("{}", content_buffer.dimmed().cyan());
+                write!(writer, "{}", content_buffer.dimmed().cyan())?;
             } else {
-                print!("{}", content_buffer);
-                final_command.push_str(&content_buffer);
+                write!(writer, "{}", content_buffer)?;
+                final_response.push_str(&content_buffer);
             }
-            stdout.flush()?;
+            writer.flush()?;
         }
-        println!();
+        writeln!(writer)?;
 
-        Ok(final_command.trim().to_string())
+        Ok(final_response.trim().to_string())
     }
 }
 
-// Tests updated to be minimal for now as we transition to streaming
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +225,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_stream_raw_success() {
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_body = "{\"response\": \"ls\", \"done\": false}\n{\"response\": \" -la\", \"done\": true}\n";
+        let _mock = server.mock("POST", "/api/generate")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mock_body)
+            .create_async().await;
+
+        let client = OllamaClient::new(url, "test-model".to_string());
+        let mut output = Vec::new();
+        let result = client.stream_raw("test prompt", &mut output).await.unwrap();
+
+        assert_eq!(result, "ls -la");
+        assert_eq!(String::from_utf8(output).unwrap().trim(), "ls -la");
+    }
+
+    #[tokio::test]
+    async fn test_stream_raw_with_think() {
+        control::set_override(false);
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_body = "{\"response\": \"<think>\", \"done\": false}\n\
+                         {\"response\": \"I should use ls\", \"done\": false}\n\
+                         {\"response\": \"</think>\", \"done\": false}\n\
+                         {\"response\": \"ls -la\", \"done\": true}\n";
+        let _mock = server.mock("POST", "/api/generate")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mock_body)
+            .create_async().await;
+
+        let client = OllamaClient::new(url, "test-model".to_string());
+        let mut output = Vec::new();
+        let result = client.stream_raw("test prompt", &mut output).await.unwrap();
+
+        assert_eq!(result, "ls -la");
+        let output_str = String::from_utf8(output).unwrap();
+        assert!(output_str.contains("I should use ls"));
+        assert!(output_str.contains("---"));
+        assert!(output_str.contains("ls -la"));
+    }
+
+    #[tokio::test]
     async fn test_stream_command_error() {
         let mut server = Server::new_async().await;
         let url = server.url();
@@ -179,8 +281,41 @@ mod tests {
             .create_async().await;
 
         let client = OllamaClient::new(url, "test-model".to_string());
-        let result = client.stream_command("list files").await;
+        let mut output = Vec::new();
+        let result = client.stream_raw("list files", &mut output).await;
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_env_context() {
+        let client = OllamaClient::new("host".to_string(), "model".to_string());
+        let (os, shell, cwd) = client.get_env_context();
+        
+        assert!(!os.is_empty());
+        assert!(!shell.is_empty());
+        assert!(!cwd.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_fix_command() {
+        control::set_override(false);
+        let mut server = Server::new_async().await;
+        let url = server.url();
+
+        let mock_body = "{\"response\": \"Explanation: wrong flag\\nCommand: ls\", \"done\": true}\n";
+        let _mock = server.mock("POST", "/api/generate")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mock_body)
+            .create_async().await;
+
+        let client = OllamaClient::new(url, "test-model".to_string());
+        // Since fix_command prints to stdout by default in our implementation,
+        // we can't easily capture it without refactoring it too.
+        // But for coverage, just calling it is good.
+        // Actually, stream_raw is what we tested above.
+        let result = client.fix_command("error output").await.unwrap();
+        assert_eq!(result, "Explanation: wrong flag\nCommand: ls");
     }
 }
