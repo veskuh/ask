@@ -1,5 +1,5 @@
 use clap::Parser;
-use ask::OllamaClient;
+use ask::{OllamaClient, cosine_similarity};
 use std::process::{self, Command};
 use colored::*;
 use serde::{Serialize, Deserialize};
@@ -11,6 +11,8 @@ struct Config {
     model: String,
     host: String,
     auto_copy: bool,
+    embedding_model: String,
+    cache_threshold: f32,
 }
 
 impl Default for Config {
@@ -19,6 +21,8 @@ impl Default for Config {
             model: "gemma4:e4b".to_string(),
             host: "http://localhost:11434".to_string(),
             auto_copy: true,
+            embedding_model: "nomic-embed-text".to_string(),
+            cache_threshold: 0.92,
         }
     }
 }
@@ -26,6 +30,19 @@ impl Default for Config {
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct State {
     last_command: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct Cache {
+    entries: Vec<CacheEntry>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CacheEntry {
+    question: String,
+    embedding: Vec<f32>,
+    command: String,
+    os: String,
 }
 
 /// A simple command line helper for remembering command line commands.
@@ -62,6 +79,10 @@ struct Args {
     /// Execute the suggested command after confirmation
     #[arg(short = 'x', long)]
     execute: bool,
+
+    /// Disable semantic cache for this run
+    #[arg(long)]
+    no_cache: bool,
 }
 
 #[tokio::main]
@@ -71,7 +92,7 @@ async fn main() {
     // Load config
     let cfg: Config = confy::load("ask", None).unwrap_or_default();
     
-    // Resolve values: CLI arg > Config file > Default
+    // Resolve values
     let model = args.model.unwrap_or(cfg.model);
     let host = args.host.unwrap_or(cfg.host);
     let should_copy = if args.no_copy { false } else { cfg.auto_copy };
@@ -128,14 +149,60 @@ async fn main() {
             }
         }
     } else if let Some(question) = args.question {
-        match client.stream_command(&question).await {
-            Ok(full_response) => {
-                let commands = extract_commands(&full_response);
-                handle_new_commands(commands, should_copy, args.execute).await;
+        let os = std::env::consts::OS.to_string();
+        let mut cached_command: Option<String> = None;
+        let mut current_embedding: Option<Vec<f32>> = None;
+        let mut cache_match_idx: Option<usize> = None;
+
+        if let Ok(emb) = client.get_embeddings(&cfg.embedding_model, &question).await {
+            current_embedding = Some(emb.clone());
+            let cache: Cache = confy::load("ask", "cache").unwrap_or_default();
+            for (i, entry) in cache.entries.iter().enumerate() {
+                if entry.os == os && cosine_similarity(&emb, &entry.embedding) >= cfg.cache_threshold {
+                    cached_command = Some(entry.command.clone());
+                    cache_match_idx = Some(i);
+                    break;
+                }
             }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                process::exit(1);
+        }
+
+        if cached_command.is_some() && !args.no_cache {
+            let cmd = cached_command.unwrap();
+            println!("{}", "⚡ Cache hit! Serving instantly...".cyan().italic());
+            println!("{}", cmd);
+            handle_new_commands(vec![cmd], should_copy, args.execute).await;
+        } else {
+            match client.stream_command(&question).await {
+                Ok(full_response) => {
+                    let commands = extract_commands(&full_response);
+                    if let Some(first_cmd) = commands.first() {
+                        // Save or Update cache if we have an embedding
+                        if let Some(emb) = current_embedding {
+                            let mut cache: Cache = confy::load("ask", "cache").unwrap_or_default();
+                            if let Some(idx) = cache_match_idx {
+                                // Update existing entry if user forced no-cache
+                                println!("{}", "🔄 Updating cache with fresh result...".yellow().italic());
+                                cache.entries[idx].command = first_cmd.clone();
+                                cache.entries[idx].question = question.clone();
+                                cache.entries[idx].embedding = emb;
+                            } else {
+                                // Add new entry
+                                cache.entries.push(CacheEntry {
+                                    question: question.clone(),
+                                    embedding: emb,
+                                    command: first_cmd.clone(),
+                                    os,
+                                });
+                            }
+                            let _ = confy::store("ask", "cache", cache);
+                        }
+                    }
+                    handle_new_commands(commands, should_copy, args.execute).await;
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    process::exit(1);
+                }
             }
         }
     } else {

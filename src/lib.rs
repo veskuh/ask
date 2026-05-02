@@ -12,6 +12,17 @@ struct GenerateRequest<'a> {
     stream: bool,
 }
 
+#[derive(Serialize)]
+struct EmbeddingRequest<'a> {
+    model: &'a str,
+    prompt: String,
+}
+
+#[derive(Deserialize)]
+struct EmbeddingResponse {
+    embedding: Vec<f32>,
+}
+
 #[derive(Deserialize)]
 struct GenerateResponse {
     response: String,
@@ -32,6 +43,27 @@ impl OllamaClient {
             model,
             client: Client::new(),
         }
+    }
+
+    pub async fn get_embeddings(&self, model: &str, prompt: &str) -> Result<Vec<f32>, Box<dyn Error>> {
+        let request_payload = EmbeddingRequest {
+            model,
+            prompt: prompt.to_string(),
+        };
+
+        let url = format!("{}/api/embeddings", self.host);
+        let response = self.client
+            .post(&url)
+            .json(&request_payload)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("Ollama API returned error: {}", response.status()).into());
+        }
+
+        let emb_response: EmbeddingResponse = response.json().await?;
+        Ok(emb_response.embedding)
     }
 
     pub async fn stream_command(&self, question: &str) -> Result<String, Box<dyn Error>> {
@@ -215,6 +247,15 @@ impl OllamaClient {
     }
 }
 
+pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
+    if v1.len() != v2.len() { return 0.0; }
+    let dot_product: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
+    let magnitude1: f32 = v1.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let magnitude2: f32 = v2.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if magnitude1 == 0.0 || magnitude2 == 0.0 { return 0.0; }
+    dot_product / (magnitude1 * magnitude2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,11 +355,17 @@ mod tests {
             .create_async().await;
 
         let client = OllamaClient::new(url, "test-model".to_string());
-        // Since fix_command prints to stdout by default in our implementation,
-        // we can't easily capture it without refactoring it too.
-        // But for coverage, just calling it is good.
-        // Actually, stream_raw is what we tested above.
         let result = client.fix_command("error output").await.unwrap();
         assert_eq!(result, "Explanation: wrong flag\nCommand: ls");
+    }
+
+    #[test]
+    fn test_cosine_similarity() {
+        let v1 = vec![1.0, 0.0];
+        let v2 = vec![1.0, 0.0];
+        assert!((cosine_similarity(&v1, &v2) - 1.0).abs() < 1e-6);
+
+        let v3 = vec![0.0, 1.0];
+        assert!(cosine_similarity(&v1, &v3).abs() < 1e-6);
     }
 }
