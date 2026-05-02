@@ -2,6 +2,24 @@ use clap::Parser;
 use ask::OllamaClient;
 use std::process;
 use colored::*;
+use serde::{Serialize, Deserialize};
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Config {
+    model: String,
+    host: String,
+    auto_copy: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            model: "gemma4:latest".to_string(),
+            host: "http://localhost:11434".to_string(),
+            auto_copy: true,
+        }
+    }
+}
 
 /// A simple command line helper for remembering command line commands.
 #[derive(Parser, Debug)]
@@ -11,23 +29,35 @@ struct Args {
     question: String,
 
     /// Ollama model to use
-    #[arg(short, long, default_value = "qwen3:8b")]
-    model: String,
+    #[arg(short, long)]
+    model: Option<String>,
 
     /// Ollama host URL
-    #[arg(short = 'o', long, default_value = "http://localhost:11434")]
-    host: String,
+    #[arg(short = 'o', long)]
+    host: Option<String>,
+
+    /// Disable automatic copy to clipboard
+    #[arg(long)]
+    no_copy: bool,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    
+    // Load config
+    let cfg: Config = confy::load("ask", None).unwrap_or_default();
+    
+    // Resolve values: CLI arg > Config file > Default
+    let model = args.model.unwrap_or(cfg.model);
+    let host = args.host.unwrap_or(cfg.host);
+    let should_copy = if args.no_copy { false } else { cfg.auto_copy };
 
-    let client = OllamaClient::new(args.host, args.model);
+    let client = OllamaClient::new(host, model);
 
     match client.stream_command(&args.question).await {
         Ok(command) => {
-            if !command.is_empty() {
+            if should_copy && !command.is_empty() {
                 let mut clipboard = arboard::Clipboard::new().unwrap();
                 if let Err(e) = clipboard.set_text(command) {
                     eprintln!("Warning: Failed to copy to clipboard: {}", e);

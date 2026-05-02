@@ -6,14 +6,16 @@ A simple Rust-based command-line helper for remembering terminal commands. It us
 
 - **Instant Answers:** Get the command you need without leaving the terminal.
 - **Streaming Output:** See the model's response in real-time.
-- **Thought Separation:** Automatically detects and colorizes reasoning/thought blocks (e.g., from models like DeepSeek-R1 or Qwen2.5-Coder) and separates them from the final command.
-- **Customizable:** Easily change the Ollama model or host via CLI flags.
+- **Thought Separation:** Automatically detects and colorizes reasoning/thought blocks (e.g., from models like DeepSeek-R1 or Qwen2.5-Coder) in dimmed cyan.
+- **Automatic Clipboard Copy:** The generated command is automatically copied to your system clipboard for instant use.
+- **Context Awareness:** Automatically detects your OS, Linux Distro, Shell, and Current Working Directory to ensure commands are compatible and relevant.
+- **Persistent Configuration:** Save your preferred model and host settings in a config file.
 
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) (2024 edition)
 - [Ollama](https://ollama.com/) installed and running.
-- A model downloaded (default is `qwen3:8b`, but works great with `codellama`, `mistral`, etc.).
+- A model downloaded (default is `gemma4:latest`, but works great with `codellama`, `mistral`, `deepseek-r1`, etc.).
 
 ## Installation
 
@@ -26,6 +28,8 @@ cd ask
 cargo install --path .
 ```
 
+Ensure `$HOME/.cargo/bin` is in your `PATH`.
+
 ## Usage
 
 Basic usage:
@@ -33,15 +37,25 @@ Basic usage:
 ask "How to find new files that start with S in this dir"
 ```
 
-Specifying a different model or host:
-```bash
-ask "list all docker containers" --model codellama --host http://192.168.1.10:11434
-```
-
 ### Options
-- `-m, --model <MODEL>`: Ollama model to use (default: `qwen3:8b`).
-- `-o, --host <HOST>`: Ollama host URL (default: `http://localhost:11434`).
+- `-m, --model <MODEL>`: Ollama model to use (overrides config).
+- `-o, --host <HOST>`: Ollama host URL (overrides config).
+- `--no-copy`: Disable automatic copy to clipboard for this run.
 - `-h, --help`: Show help information.
+
+## Configuration
+
+The utility uses a persistent configuration file. It is created on the first run.
+
+- **Location (macOS):** `~/Library/Application Support/rs.ask/default-config.toml`
+- **Location (Linux):** `~/.config/ask/default-config.toml`
+
+### Default Settings:
+```toml
+model = "gemma4:latest"
+host = "http://localhost:11434"
+auto_copy = true
+```
 
 ## License
 
