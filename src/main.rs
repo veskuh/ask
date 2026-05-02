@@ -1,6 +1,7 @@
 use clap::Parser;
 use ask::OllamaClient;
 use std::process;
+use colored::*;
 
 /// A simple command line helper for remembering command line commands.
 #[derive(Parser, Debug)]
@@ -24,8 +25,20 @@ async fn main() {
 
     let client = OllamaClient::new(args.host, args.model);
 
-    if let Err(e) = client.stream_command(&args.question).await {
-        eprintln!("Error: {}", e);
-        process::exit(1);
+    match client.stream_command(&args.question).await {
+        Ok(command) => {
+            if !command.is_empty() {
+                let mut clipboard = arboard::Clipboard::new().unwrap();
+                if let Err(e) = clipboard.set_text(command) {
+                    eprintln!("Warning: Failed to copy to clipboard: {}", e);
+                } else {
+                    println!("{}", "✔ Command copied to clipboard".green().italic());
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
     }
 }

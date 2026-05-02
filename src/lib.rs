@@ -34,7 +34,7 @@ impl OllamaClient {
         }
     }
 
-    pub async fn stream_command(&self, question: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn stream_command(&self, question: &str) -> Result<String, Box<dyn Error>> {
         let prompt = format!(
             "Provide only the command line command for this query. \
              Do not include any markdown formatting, backticks, or explanations. \
@@ -64,6 +64,7 @@ impl OllamaClient {
         let mut in_thought = false;
         let mut response_buffer = String::new(); // Buffer for JSON lines
         let mut content_buffer = String::new();  // Buffer for raw content (thinking/command)
+        let mut final_command = String::new();   // Accumulate command for clipboard
         let mut stdout = io::stdout();
 
         while let Some(chunk_result) = response_stream.next().await {
@@ -82,7 +83,9 @@ impl OllamaClient {
                     if !in_thought && content_buffer.contains("<think>") {
                         in_thought = true;
                         if let Some(pos) = content_buffer.find("<think>") {
-                            print!("{}", &content_buffer[..pos]);
+                            let pre_thought = &content_buffer[..pos];
+                            print!("{}", pre_thought);
+                            final_command.push_str(pre_thought);
                             content_buffer = content_buffer[pos + 7..].to_string();
                         }
                     }
@@ -103,6 +106,7 @@ impl OllamaClient {
                         }
                     } else {
                         print!("{}", content_buffer);
+                        final_command.push_str(&content_buffer);
                         content_buffer.clear();
                     }
                     stdout.flush()?;
@@ -115,12 +119,13 @@ impl OllamaClient {
                 print!("{}", content_buffer.dimmed().cyan());
             } else {
                 print!("{}", content_buffer);
+                final_command.push_str(&content_buffer);
             }
             stdout.flush()?;
         }
         println!();
 
-        Ok(())
+        Ok(final_command.trim().to_string())
     }
 }
 
