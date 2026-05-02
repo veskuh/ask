@@ -35,11 +35,38 @@ impl OllamaClient {
     }
 
     pub async fn stream_command(&self, question: &str) -> Result<String, Box<dyn Error>> {
+        let os = std::env::consts::OS;
+        let mut distro = String::new();
+
+        if os == "linux" {
+            if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+                for line in content.lines() {
+                    if line.starts_with("PRETTY_NAME=") {
+                        distro = line.replace("PRETTY_NAME=", "").replace("\"", "").to_string();
+                        break;
+                    }
+                }
+            }
+        }
+
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "unknown".to_string());
+        let cwd = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "unknown".to_string());
+
+        let context_os = if distro.is_empty() {
+            os.to_string()
+        } else {
+            format!("{} ({})", os, distro)
+        };
+
         let prompt = format!(
-            "Provide only the command line command for this query. \
+            "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n\n\
+             Task: Provide only the command line command for this query. \
+             Ensure the command is compatible with the specified OS and Shell. \
              Do not include any markdown formatting, backticks, or explanations. \
              Just the raw command itself. Query: {}",
-            question
+            context_os, shell, cwd, question
         );
 
         let request_payload = GenerateRequest {
