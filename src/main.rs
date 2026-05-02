@@ -1,9 +1,10 @@
 use clap::Parser;
 use ask::OllamaClient;
-use std::process;
+use std::process::{self, Command};
 use colored::*;
 use serde::{Serialize, Deserialize};
 use std::io::{self, Read};
+use dialoguer::Confirm;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
@@ -57,6 +58,10 @@ struct Args {
     /// Fix a command based on error output from stdin (e.g., 'ls --wrong 2>&1 | ask --fix')
     #[arg(short, long)]
     fix: bool,
+
+    /// Execute the suggested command after confirmation
+    #[arg(short = 'x', long)]
+    execute: bool,
 }
 
 #[tokio::main]
@@ -98,7 +103,7 @@ async fn main() {
         match client.fix_command(&buffer).await {
             Ok(full_response) => {
                 let command = extract_command(&full_response);
-                handle_new_command(command, should_copy).await;
+                handle_new_command(command, should_copy, args.execute).await;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -114,7 +119,7 @@ async fn main() {
         println!("{}", format!("Refining: {}", state.last_command).yellow().bold());
         match client.refine_command(&state.last_command, &refinement).await {
             Ok(command) => {
-                handle_new_command(command, should_copy).await;
+                handle_new_command(command, should_copy, args.execute).await;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -124,7 +129,7 @@ async fn main() {
     } else if let Some(question) = args.question {
         match client.stream_command(&question).await {
             Ok(command) => {
-                handle_new_command(command, should_copy).await;
+                handle_new_command(command, should_copy, args.execute).await;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -137,7 +142,7 @@ async fn main() {
     }
 }
 
-async fn handle_new_command(command: String, should_copy: bool) {
+async fn handle_new_command(command: String, should_copy: bool, should_execute: bool) {
     if !command.is_empty() {
         // Save state
         let state = State { last_command: command.clone() };
@@ -145,10 +150,31 @@ async fn handle_new_command(command: String, should_copy: bool) {
 
         if should_copy {
             let mut clipboard = arboard::Clipboard::new().unwrap();
-            if let Err(e) = clipboard.set_text(command) {
+            if let Err(e) = clipboard.set_text(command.clone()) {
                 eprintln!("Warning: Failed to copy to clipboard: {}", e);
             } else {
                 println!("{}", "✔ Command copied to clipboard".green().italic());
+            }
+        }
+
+        if should_execute {
+            if Confirm::new()
+                .with_prompt("Run this command?")
+                .default(false)
+                .interact()
+                .unwrap_or(false)
+            {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "sh".to_string());
+                let status = Command::new(shell)
+                    .arg("-c")
+                    .arg(&command)
+                    .status();
+
+                match status {
+                    Ok(s) if s.success() => (),
+                    Ok(s) => eprintln!("Command exited with status: {}", s),
+                    Err(e) => eprintln!("Failed to execute command: {}", e),
+                }
             }
         }
     }

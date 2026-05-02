@@ -13,6 +13,7 @@ A simple Rust-based command-line helper for remembering terminal commands. It us
 - **Command Fixer:** Pipe error output to `ask --fix` to get an explanation and a corrected command.
 - **Command Refinement:** Use the `--refine` flag to iteratively adjust the last generated command.
 - **Command Explanation:** Use the `--explain-previous` flag to get a detailed breakdown of the last generated command.
+- **Prompted Execution:** Use the `-x` flag to immediately execute the suggested command after a confirmation prompt.
 
 ## Prerequisites
 
@@ -40,6 +41,11 @@ Basic usage:
 ask "How to find new files that start with S in this dir"
 ```
 
+Execute a command immediately (with confirmation):
+```bash
+ask "list all docker containers" -x
+```
+
 Fix a failing command:
 ```bash
 # Pipe error output to ask
@@ -59,6 +65,7 @@ ask --explain-previous
 ```
 
 ### Options
+- `-x, --execute`: Execute the suggested command after confirmation.
 - `-f, --fix`: Fix a command based on error output from stdin.
 - `-r, --refine <INSTRUCTION>`: Refine the previous command.
 - `-e, --explain-previous`: Explain the previous command.
@@ -69,7 +76,7 @@ ask --explain-previous
 
 ## Configuration & State
 
-- **Config File:** `~/Library/Application Support/rs.ask/default-config.toml` (macOS) or `~/.config/ask/default-config.toml` (Linux).
+- **Config File:** `~/Library/Application Support/rs.ask/config.toml` (macOS) or `~/.config/ask/config.toml` (Linux).
 - **State File:** Stores the last command for the refine and explain features.
 
 ## License
