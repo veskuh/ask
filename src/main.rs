@@ -198,18 +198,7 @@ async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_ex
         let _ = confy::store("ask", "state", state);
 
         if should_copy {
-            match arboard::Clipboard::new() {
-                Ok(mut clipboard) => {
-                    if let Err(e) = clipboard.set_text(selected_command.clone()) {
-                        eprintln!("{}: Failed to copy to clipboard: {}", "Warning".yellow().bold(), e);
-                    } else {
-                        println!("{}", "✔ Command copied to clipboard".green().italic());
-                    }
-                }
-                Err(e) => {
-                    eprintln!("{}: Clipboard unavailable: {}", "Warning".yellow().bold(), e);
-                }
-            }
+            copy_to_clipboard(&selected_command);
         }
 
         if should_execute {
@@ -234,6 +223,57 @@ async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_ex
         }
     }
     Ok(())
+}
+
+fn copy_to_clipboard(text: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, arboard/clipboard often fails to persist after process exit.
+        // Try wl-copy (Wayland) or xclip (X11) first as they handle persistence better.
+        let has_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
+        
+        if has_wayland {
+            if let Ok(mut child) = Command::new("wl-copy").stdin(std::process::Stdio::piped()).spawn() {
+                if let Some(mut stdin) = child.stdin.take() {
+                    use std::io::Write;
+                    if stdin.write_all(text.as_bytes()).is_ok() {
+                        println!("{}", "✔ Command copied to clipboard (via wl-copy)".green().italic());
+                        return;
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut child) = Command::new("xclip").args(["-selection", "clipboard"]).stdin(std::process::Stdio::piped()).spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                use std::io::Write;
+                if stdin.write_all(text.as_bytes()).is_ok() {
+                    println!("{}", "✔ Command copied to clipboard (via xclip)".green().italic());
+                    return;
+                }
+            }
+        }
+    }
+
+    // Fallback to arboard for macOS/Windows or if Linux tools are missing
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => {
+            if let Err(e) = clipboard.set_text(text.to_string()) {
+                eprintln!("{}: Failed to copy to clipboard: {}", "Warning".yellow().bold(), e);
+            } else {
+                #[cfg(target_os = "linux")]
+                {
+                    println!("{}", "✔ Command copied to clipboard (arboard)".green().italic());
+                    println!("{}: On some Linux setups, clipboard may clear when the app exits.", "Note".yellow());
+                }
+                #[cfg(not(target_os = "linux"))]
+                println!("{}", "✔ Command copied to clipboard".green().italic());
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: Clipboard unavailable: {}", "Warning".yellow().bold(), e);
+        }
+    }
 }
 
 fn extract_commands(response: &str) -> Vec<String> {
