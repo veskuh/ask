@@ -2,10 +2,11 @@ use clap::Parser;
 use ask::client::{OllamaClient, OllamaError};
 use ask::config::{Config, State};
 use ask::cache::{Cache, CacheEntry, cosine_similarity};
-use std::process::{self, Command};
+use std::process::Command;
 use colored::*;
 use std::io::{self, Read};
 use dialoguer::{Confirm, Select};
+use anyhow::{Context, Result, bail};
 
 /// A simple command line helper for remembering command line commands.
 #[derive(Parser, Debug)]
@@ -48,66 +49,62 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     let args = Args::parse();
     
     // Load config
-    let cfg: Config = confy::load("ask", None).unwrap_or_default();
+    let cfg: Config = confy::load("ask", None).context("Failed to load configuration")?;
+    cfg.validate().context("Configuration validation failed")?;
     
     // Resolve values
-    let model = args.model.unwrap_or(cfg.model);
-    let host = args.host.unwrap_or(cfg.host);
+    let mut cfg = cfg;
+    if let Some(m) = args.model { cfg.model = m; }
+    if let Some(h) = args.host { cfg.host = h; }
     let should_copy = if args.no_copy { false } else { cfg.auto_copy };
 
-    let client = OllamaClient::new(host, model);
+    cfg.validate().context("Configuration validation failed")?;
+
+    let client = OllamaClient::new(cfg.host.clone(), cfg.model.clone());
 
     if args.explain_previous {
-        let state: State = confy::load("ask", "state").unwrap_or_default();
+        let state: State = confy::load("ask", "state").context("Failed to load state")?;
         if state.last_command.is_empty() {
-            eprintln!("No previous command found to explain.");
-            process::exit(1);
+            bail!("No previous command found to explain.");
         }
         println!("{}", format!("Explaining: {}", state.last_command).yellow().bold());
-        if let Err(e) = client.explain_command(&state.last_command).await {
-            eprintln!("Error: {}", e);
-            process::exit(1);
-        }
+        client.explain_command(&state.last_command).await?;
     } else if args.fix {
         let mut buffer = String::new();
         if !atty::is(atty::Stream::Stdin) {
-            io::stdin().read_to_string(&mut buffer).unwrap();
+            io::stdin().read_to_string(&mut buffer).context("Failed to read from stdin")?;
         }
         if buffer.trim().is_empty() {
-            eprintln!("Error: --fix requires error output from stdin (e.g., 'cmd 2>&1 | ask --fix')");
-            process::exit(1);
+            bail!("--fix requires error output from stdin (e.g., 'cmd 2>&1 | ask --fix')");
         }
 
         println!("{}", "Analyzing error...".yellow().bold());
         match client.fix_command(&buffer).await {
             Ok(full_response) => {
                 let commands = extract_commands(&full_response);
-                handle_new_commands(commands, should_copy, args.execute).await;
+                handle_new_commands(commands, should_copy, args.execute).await?;
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
-                process::exit(1);
+                bail!("Error: {}", e);
             }
         }
     } else if let Some(refinement) = args.refine {
-        let state: State = confy::load("ask", "state").unwrap_or_default();
+        let state: State = confy::load("ask", "state").context("Failed to load state")?;
         if state.last_command.is_empty() {
-            eprintln!("No previous command found to refine.");
-            process::exit(1);
+            bail!("No previous command found to refine.");
         }
         println!("{}", format!("Refining: {}", state.last_command).yellow().bold());
         match client.refine_command(&state.last_command, &refinement).await {
             Ok(full_response) => {
                 let commands = extract_commands(&full_response);
-                handle_new_commands(commands, should_copy, args.execute).await;
+                handle_new_commands(commands, should_copy, args.execute).await?;
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
-                process::exit(1);
+                bail!("Error: {}", e);
             }
         }
     } else if let Some(question) = args.question {
@@ -130,18 +127,16 @@ async fn main() {
             }
             Err(e) => {
                 if let OllamaError::NotRunning { .. } = e {
-                    eprintln!("Error: {}", e);
-                    process::exit(1);
+                    bail!("Error: {}", e);
                 }
                 eprintln!("{}: Cache optimization disabled ({}).", "Note".yellow().bold(), e);
             }
         }
 
-        if cached_command.is_some() && !args.no_cache {
-            let cmd = cached_command.unwrap();
+        if let (Some(cmd), false) = (cached_command, args.no_cache) {
             println!("{}", "⚡ Cache hit! Serving instantly...".cyan().italic());
             println!("{}", cmd);
-            handle_new_commands(vec![cmd], should_copy, args.execute).await;
+            handle_new_commands(vec![cmd], should_copy, args.execute).await?;
         } else {
             match client.stream_command(&question).await {
                 Ok(full_response) => {
@@ -168,22 +163,22 @@ async fn main() {
                             let _ = confy::store("ask", "cache", cache);
                         }
                     }
-                    handle_new_commands(commands, should_copy, args.execute).await;
+                    handle_new_commands(commands, should_copy, args.execute).await?;
                 }
                 Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(1);
+                    bail!("Error: {}", e);
                 }
             }
         }
     } else {
-        eprintln!("Error: No question provided. Use 'ask --help' for usage.");
-        process::exit(1);
+        bail!("No question provided. Use 'ask --help' for usage.");
     }
+
+    Ok(())
 }
 
-async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_execute: bool) {
-    if commands.is_empty() { return; }
+async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_execute: bool) -> Result<()> {
+    if commands.is_empty() { return Ok(()); }
 
     let selected_command = if commands.len() > 1 {
         let selection = Select::new()
@@ -191,7 +186,7 @@ async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_ex
             .items(&commands)
             .default(0)
             .interact()
-            .unwrap_or(0);
+            .context("Selection interrupted")?;
         commands[selection].clone()
     } else {
         commands[0].clone()
@@ -203,11 +198,17 @@ async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_ex
         let _ = confy::store("ask", "state", state);
 
         if should_copy {
-            let mut clipboard = arboard::Clipboard::new().unwrap();
-            if let Err(e) = clipboard.set_text(selected_command.clone()) {
-                eprintln!("Warning: Failed to copy to clipboard: {}", e);
-            } else {
-                println!("{}", "✔ Command copied to clipboard".green().italic());
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    if let Err(e) = clipboard.set_text(selected_command.clone()) {
+                        eprintln!("{}: Failed to copy to clipboard: {}", "Warning".yellow().bold(), e);
+                    } else {
+                        println!("{}", "✔ Command copied to clipboard".green().italic());
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{}: Clipboard unavailable: {}", "Warning".yellow().bold(), e);
+                }
             }
         }
 
@@ -232,6 +233,7 @@ async fn handle_new_commands(commands: Vec<String>, should_copy: bool, should_ex
             }
         }
     }
+    Ok(())
 }
 
 fn extract_commands(response: &str) -> Vec<String> {
