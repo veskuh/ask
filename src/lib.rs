@@ -1,9 +1,33 @@
 use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use std::error::Error;
 use futures_util::StreamExt;
 use std::io::{self, Write};
 use colored::*;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum OllamaError {
+    #[error("Ollama is not running or unreachable at {host}. Please make sure Ollama is installed and running (https://ollama.com).")]
+    NotRunning { host: String, source: reqwest::Error },
+    
+    #[error("Ollama API error: {0}")]
+    ApiError(String),
+    
+    #[error("Failed to parse response from Ollama: {0}")]
+    ParseError(#[from] serde_json::Error),
+    
+    #[error("Network error communicating with Ollama: {0}")]
+    NetworkError(#[from] reqwest::Error),
+    
+    #[error("IO error: {0}")]
+    IoError(#[from] io::Error),
+    
+    #[error("Encoding error: {0}")]
+    Utf8Error(#[from] std::string::FromUtf8Error),
+
+    #[error("Data conversion error: {0}")]
+    DataError(#[from] std::str::Utf8Error),
+}
 
 #[derive(Serialize)]
 struct GenerateRequest<'a> {
@@ -45,7 +69,7 @@ impl OllamaClient {
         }
     }
 
-    pub async fn get_embeddings(&self, model: &str, prompt: &str) -> Result<Vec<f32>, Box<dyn Error>> {
+    pub async fn get_embeddings(&self, model: &str, prompt: &str) -> Result<Vec<f32>, OllamaError> {
         let request_payload = EmbeddingRequest {
             model,
             prompt: prompt.to_string(),
@@ -56,17 +80,28 @@ impl OllamaClient {
             .post(&url)
             .json(&request_payload)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    OllamaError::NotRunning { host: self.host.clone(), source: e }
+                } else {
+                    OllamaError::NetworkError(e)
+                }
+            })?;
 
         if !response.status().is_success() {
-            return Err(format!("Ollama API returned error: {}", response.status()).into());
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(OllamaError::ApiError(format!("Model '{}' not found. You may need to pull it first using 'ollama pull {}'", model, model)));
+            }
+            return Err(OllamaError::ApiError(status.to_string()));
         }
 
         let emb_response: EmbeddingResponse = response.json().await?;
         Ok(emb_response.embedding)
     }
 
-    pub async fn stream_command(&self, question: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn stream_command(&self, question: &str) -> Result<String, OllamaError> {
         let (os, shell, cwd) = self.get_env_context();
         let prompt = format!(
             "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n\n\
@@ -82,7 +117,7 @@ impl OllamaClient {
         self.stream_raw(&prompt, &mut io::stdout()).await
     }
 
-    pub async fn refine_command(&self, last_command: &str, refinement: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn refine_command(&self, last_command: &str, refinement: &str) -> Result<String, OllamaError> {
         let (os, shell, cwd) = self.get_env_context();
         let prompt = format!(
             "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n- Previous Command: {}\n\n\
@@ -98,7 +133,7 @@ impl OllamaClient {
         self.stream_raw(&prompt, &mut io::stdout()).await
     }
 
-    pub async fn explain_command(&self, command: &str) -> Result<(), Box<dyn Error>> {
+    pub async fn explain_command(&self, command: &str) -> Result<(), OllamaError> {
         let os = std::env::consts::OS;
         let prompt = format!(
             "Context:\n- Operating System: {}\n\n\
@@ -113,7 +148,7 @@ impl OllamaClient {
         Ok(())
     }
 
-    pub async fn fix_command(&self, error_output: &str) -> Result<String, Box<dyn Error>> {
+    pub async fn fix_command(&self, error_output: &str) -> Result<String, OllamaError> {
         let (os, shell, cwd) = self.get_env_context();
         let prompt = format!(
             "Context:\n- Operating System: {}\n- Shell: {}\n- Current Directory: {}\n\n\
@@ -160,7 +195,7 @@ impl OllamaClient {
         (context_os, shell, cwd)
     }
 
-    async fn stream_raw<W: Write>(&self, prompt: &str, writer: &mut W) -> Result<String, Box<dyn Error>> {
+    async fn stream_raw<W: Write>(&self, prompt: &str, writer: &mut W) -> Result<String, OllamaError> {
         let request_payload = GenerateRequest {
             model: &self.model,
             prompt: prompt.to_string(),
@@ -172,10 +207,21 @@ impl OllamaClient {
             .post(&url)
             .json(&request_payload)
             .send()
-            .await?;
+            .await
+            .map_err(|e| {
+                if e.is_connect() || e.is_timeout() {
+                    OllamaError::NotRunning { host: self.host.clone(), source: e }
+                } else {
+                    OllamaError::NetworkError(e)
+                }
+            })?;
 
         if !response.status().is_success() {
-            return Err(format!("Ollama API returned error: {}", response.status()).into());
+            let status = response.status();
+            if status == reqwest::StatusCode::NOT_FOUND {
+                return Err(OllamaError::ApiError(format!("Model '{}' not found. You may need to pull it first using 'ollama pull {}'", self.model, self.model)));
+            }
+            return Err(OllamaError::ApiError(status.to_string()));
         }
 
         let mut response_stream = response.bytes_stream();
@@ -186,7 +232,7 @@ impl OllamaClient {
         let mut final_response = String::new();   // Accumulate response for return
 
         while let Some(chunk_result) = response_stream.next().await {
-            let chunk = chunk_result?;
+            let chunk = chunk_result.map_err(OllamaError::NetworkError)?;
             response_buffer.push_str(std::str::from_utf8(&chunk)?);
             
             while let Some(pos) = response_buffer.find('\n') {
@@ -194,41 +240,40 @@ impl OllamaClient {
                 response_buffer = response_buffer[pos + 1..].to_string();
                 
                 if line.is_empty() { continue; }
-                if let Ok(gen_response) = serde_json::from_str::<GenerateResponse>(&line) {
-                    let content = gen_response.response;
-                    content_buffer.push_str(&content);
+                let gen_response: GenerateResponse = serde_json::from_str(&line)?;
+                let content = gen_response.response;
+                content_buffer.push_str(&content);
 
-                    if !in_thought && content_buffer.contains("<think>") {
-                        in_thought = true;
-                        if let Some(pos) = content_buffer.find("<think>") {
-                            let pre_thought = &content_buffer[..pos];
-                            write!(writer, "{}", pre_thought)?;
-                            final_response.push_str(pre_thought);
-                            content_buffer = content_buffer[pos + 7..].to_string();
-                        }
+                if !in_thought && content_buffer.contains("<think>") {
+                    in_thought = true;
+                    if let Some(pos) = content_buffer.find("<think>") {
+                        let pre_thought = &content_buffer[..pos];
+                        write!(writer, "{}", pre_thought)?;
+                        final_response.push_str(pre_thought);
+                        content_buffer = content_buffer[pos + 7..].to_string();
                     }
-
-                    if in_thought && content_buffer.contains("</think>") {
-                        if let Some(pos) = content_buffer.find("</think>") {
-                            let thought = &content_buffer[..pos];
-                            write!(writer, "{}", thought.dimmed().cyan())?;
-                            write!(writer, "\n{}", "---".dimmed().cyan())?;
-                            in_thought = false;
-                            content_buffer = content_buffer[pos + 8..].to_string();
-                        }
-                    } else if in_thought {
-                        if content_buffer.len() > 8 {
-                            let to_print = &content_buffer[..content_buffer.len() - 8];
-                            write!(writer, "{}", to_print.dimmed().cyan())?;
-                            content_buffer = content_buffer[content_buffer.len() - 8..].to_string();
-                        }
-                    } else {
-                        write!(writer, "{}", content_buffer)?;
-                        final_response.push_str(&content_buffer);
-                        content_buffer.clear();
-                    }
-                    writer.flush()?;
                 }
+
+                if in_thought && content_buffer.contains("</think>") {
+                    if let Some(pos) = content_buffer.find("</think>") {
+                        let thought = &content_buffer[..pos];
+                        write!(writer, "{}", thought.dimmed().cyan())?;
+                        write!(writer, "\n{}", "---".dimmed().cyan())?;
+                        in_thought = false;
+                        content_buffer = content_buffer[pos + 8..].to_string();
+                    }
+                } else if in_thought {
+                    if content_buffer.len() > 8 {
+                        let to_print = &content_buffer[..content_buffer.len() - 8];
+                        write!(writer, "{}", to_print.dimmed().cyan())?;
+                        content_buffer = content_buffer[content_buffer.len() - 8..].to_string();
+                    }
+                } else {
+                    write!(writer, "{}", content_buffer)?;
+                    final_response.push_str(&content_buffer);
+                    content_buffer.clear();
+                }
+                writer.flush()?;
             }
         }
         

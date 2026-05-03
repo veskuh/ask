@@ -1,5 +1,5 @@
 use clap::Parser;
-use ask::{OllamaClient, cosine_similarity};
+use ask::OllamaClient;
 use std::process::{self, Command};
 use colored::*;
 use serde::{Serialize, Deserialize};
@@ -154,15 +154,24 @@ async fn main() {
         let mut current_embedding: Option<Vec<f32>> = None;
         let mut cache_match_idx: Option<usize> = None;
 
-        if let Ok(emb) = client.get_embeddings(&cfg.embedding_model, &question).await {
-            current_embedding = Some(emb.clone());
-            let cache: Cache = confy::load("ask", "cache").unwrap_or_default();
-            for (i, entry) in cache.entries.iter().enumerate() {
-                if entry.os == os && cosine_similarity(&emb, &entry.embedding) >= cfg.cache_threshold {
-                    cached_command = Some(entry.command.clone());
-                    cache_match_idx = Some(i);
-                    break;
+        match client.get_embeddings(&cfg.embedding_model, &question).await {
+            Ok(emb) => {
+                current_embedding = Some(emb.clone());
+                let cache: Cache = confy::load("ask", "cache").unwrap_or_default();
+                for (i, entry) in cache.entries.iter().enumerate() {
+                    if entry.os == os && ask::cosine_similarity(&emb, &entry.embedding) >= cfg.cache_threshold {
+                        cached_command = Some(entry.command.clone());
+                        cache_match_idx = Some(i);
+                        break;
+                    }
                 }
+            }
+            Err(e) => {
+                if let ask::OllamaError::NotRunning { .. } = e {
+                    eprintln!("Error: {}", e);
+                    process::exit(1);
+                }
+                eprintln!("{}: Cache optimization disabled ({}).", "Note".yellow().bold(), e);
             }
         }
 

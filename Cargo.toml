@@ -15,6 +15,7 @@ arboard = "3.4"
 confy = "0.6"
 atty = "0.2"
 dialoguer = "0.11"
+thiserror = "2.0.18"
 
 [dev-dependencies]
 mockito = "1.0"
