@@ -1,49 +1,11 @@
 use clap::Parser;
-use ask::OllamaClient;
+use ask::client::{OllamaClient, OllamaError};
+use ask::config::{Config, State};
+use ask::cache::{Cache, CacheEntry, cosine_similarity};
 use std::process::{self, Command};
 use colored::*;
-use serde::{Serialize, Deserialize};
 use std::io::{self, Read};
 use dialoguer::{Confirm, Select};
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Config {
-    model: String,
-    host: String,
-    auto_copy: bool,
-    embedding_model: String,
-    cache_threshold: f32,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            model: "gemma4:e4b".to_string(),
-            host: "http://localhost:11434".to_string(),
-            auto_copy: true,
-            embedding_model: "nomic-embed-text".to_string(),
-            cache_threshold: 0.92,
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct State {
-    last_command: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default)]
-struct Cache {
-    entries: Vec<CacheEntry>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct CacheEntry {
-    question: String,
-    embedding: Vec<f32>,
-    command: String,
-    os: String,
-}
 
 /// A simple command line helper for remembering command line commands.
 #[derive(Parser, Debug)]
@@ -159,7 +121,7 @@ async fn main() {
                 current_embedding = Some(emb.clone());
                 let cache: Cache = confy::load("ask", "cache").unwrap_or_default();
                 for (i, entry) in cache.entries.iter().enumerate() {
-                    if entry.os == os && ask::cosine_similarity(&emb, &entry.embedding) >= cfg.cache_threshold {
+                    if entry.os == os && cosine_similarity(&emb, &entry.embedding) >= cfg.cache_threshold {
                         cached_command = Some(entry.command.clone());
                         cache_match_idx = Some(i);
                         break;
@@ -167,7 +129,7 @@ async fn main() {
                 }
             }
             Err(e) => {
-                if let ask::OllamaError::NotRunning { .. } = e {
+                if let OllamaError::NotRunning { .. } = e {
                     eprintln!("Error: {}", e);
                     process::exit(1);
                 }
