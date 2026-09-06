@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -115,24 +115,32 @@ impl Config {
                 }
             }
             "openrouter" => {
-                Url::parse(&self.openrouter.base_url).context("Invalid OpenRouter base URL in configuration")?;
+                Url::parse(&self.openrouter.base_url)
+                    .context("Invalid OpenRouter base URL in configuration")?;
                 if self.openrouter.model.trim().is_empty() {
                     bail!("OpenRouter model name cannot be empty in configuration");
                 }
             }
             "openai" => {
-                Url::parse(&self.openai.base_url).context("Invalid OpenAI base URL in configuration")?;
+                Url::parse(&self.openai.base_url)
+                    .context("Invalid OpenAI base URL in configuration")?;
                 if self.openai.model.trim().is_empty() {
                     bail!("OpenAI model name cannot be empty in configuration");
                 }
             }
             other => {
-                bail!("Unknown provider '{}'. Supported providers: ollama, openrouter, openai", other);
+                bail!(
+                    "Unknown provider '{}'. Supported providers: ollama, openrouter, openai",
+                    other
+                );
             }
         }
-        
+
         if self.cache_threshold < 0.0 || self.cache_threshold > 1.0 {
-            bail!("Cache threshold must be between 0.0 and 1.0 (currently: {})", self.cache_threshold);
+            bail!(
+                "Cache threshold must be between 0.0 and 1.0 (currently: {})",
+                self.cache_threshold
+            );
         }
 
         Ok(())

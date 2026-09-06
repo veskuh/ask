@@ -14,11 +14,15 @@ pub struct CacheEntry {
 }
 
 pub fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
-    if v1.len() != v2.len() { return 0.0; }
+    if v1.len() != v2.len() {
+        return 0.0;
+    }
     let dot_product: f32 = v1.iter().zip(v2.iter()).map(|(a, b)| a * b).sum();
     let magnitude1: f32 = v1.iter().map(|x| x * x).sum::<f32>().sqrt();
     let magnitude2: f32 = v2.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if magnitude1 == 0.0 || magnitude2 == 0.0 { return 0.0; }
+    if magnitude1 == 0.0 || magnitude2 == 0.0 {
+        return 0.0;
+    }
     dot_product / (magnitude1 * magnitude2)
 }
 
