@@ -49,8 +49,10 @@ ask "How to find new files that start with S in this dir"
 
 | Option | Short | Description |
 | :--- | :--- | :--- |
-| `--model <MODEL>` | `-m` | Specify the Ollama model to use (overrides config). |
-| `--host <HOST>` | `-o` | Specify the Ollama host URL (overrides config). |
+| `--provider <PROVIDER>` | `-p` | Specify LLM provider (`ollama`, `openrouter`, `openai`). |
+| `--api-key <KEY>` | | API key for cloud providers (overrides environment/config). |
+| `--model <MODEL>` | `-m` | Specify the model to use (overrides config). |
+| `--host <HOST>` | `-o` | Specify host URL / base URL (overrides config). |
 | `--execute` | `-x` | Execute the suggested command after a confirmation prompt. |
 | `--fix` | `-f` | Fix a command based on error output from stdin (e.g., `ls --wrong 2>&1 \| ask --fix`). |
 | `--refine <TEXT>` | `-r` | Refine the previous command with additional instructions. |
@@ -60,7 +62,31 @@ ask "How to find new files that start with S in this dir"
 | `--help` | `-h` | Show help information. |
 | `--version` | `-V` | Show version information. |
 
+### Configuration Management (`ask config`)
+
+Inspect or update your settings directly from the terminal without manual file editing:
+
+```bash
+# View active configuration and API key status
+ask config --show
+
+# Switch default provider to OpenRouter (default model: deepseek/deepseek-v4-flash)
+ask config --set-provider openrouter
+
+# Set your OpenRouter or OpenAI API key
+ask config --set-api-key "sk-or-v1-..."
+
+# Change model for the active provider
+ask config --set-model "deepseek/deepseek-v4-flash"
+```
+
 ### Examples
+
+**Ask with OpenRouter and DeepSeek:**
+```bash
+# Using ambient OPENROUTER_API_KEY
+ask "list all docker containers sorted by size" --provider openrouter
+```
 
 **Execute immediately:**
 ```bash
@@ -85,11 +111,22 @@ ask --refine "actually make it recursive"
 
 ### Default Settings:
 ```toml
+provider = "ollama"
 model = "gemma4:e4b"
 host = "http://localhost:11434"
 auto_copy = true
 embedding_model = "nomic-embed-text"
 cache_threshold = 0.92
+
+[openrouter]
+base_url = "https://openrouter.ai/api/v1"
+model = "deepseek/deepseek-v4-flash"
+api_key = "" # Or automatically detected from $OPENROUTER_API_KEY
+
+[openai]
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key = "" # Or automatically detected from $OPENAI_API_KEY
 ```
 
 ## License
